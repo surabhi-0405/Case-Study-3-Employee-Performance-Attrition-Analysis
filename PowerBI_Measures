@@ -1,1 +1,72 @@
+Attrited Employees = 
+CALCULATE(
+    COUNTROWS('employee_attrition_dw fact_employee_performance'),
+    'employee_attrition_dw fact_employee_performance'[Attrition_Status] = "Attrited"
+)
+-------------------------------------------------------------------------------------------------------
+Attrition Rate = 
+DIVIDE(
+    [Attrited Employees],
+    [Attrited Employees] + [Not Attrited Employees],
+    0
+)
+-------------------------------------------------------------------------------------------------------
+Average Exit Interview Score = 
+AVERAGE(
+    'employee_attrition_dw fact_employee_performance'[Exit_Interview_Score]
+)
+-------------------------------------------------------------------------------------------------------
+Average Job Satisfaction = 
+AVERAGE(
+    'employee_attrition_dw fact_employee_performance'[Job_Satisfaction]
+)
+-------------------------------------------------------------------------------------------------------
+Average Performance Rating = 
+AVERAGE(
+    'employee_attrition_dw fact_employee_performance'[Performance_Rating]
+)
+-------------------------------------------------------------------------------------------------------
+Average Satisfaction = 
+AVERAGE(
+    'employee_attrition_dw fact_employee_performance'[Overall_Satisfaction_Score]
+)
+-------------------------------------------------------------------------------------------------------
+Average Tenure = 
+AVERAGE(
+    'employee_attrition_dw dim_employee'[Job_Tenure]
+)
+-------------------------------------------------------------------------------------------------------
+Average Training Hours = 
+AVERAGE(
+    'employee_attrition_dw fact_employee_performance'[Training_Hours]
+)
+-------------------------------------------------------------------------------------------------------
+Average Work-Life Balance = 
+AVERAGE(
+    'employee_attrition_dw fact_employee_performance'[Work_Life_Balance]
+)
+-------------------------------------------------------------------------------------------------------
+Known Employees = 
+[Attrited Employees] + [Not Attrited Employees]
+-------------------------------------------------------------------------------------------------------
+Not Attrited Employees = 
+CALCULATE(
+    COUNTROWS('employee_attrition_dw fact_employee_performance'),
+    'employee_attrition_dw fact_employee_performance'[Attrition_Status] = "Not Attrited"
+)
+-------------------------------------------------------------------------------------------------------
+Retention Rate = 
+DIVIDE(
+    [Not Attrited Employees],
+    [Attrited Employees] + [Not Attrited Employees],
+    0
+)
+-------------------------------------------------------------------------------------------------------
+Total Employees = 
+COUNTROWS('employee_attrition_dw fact_employee_performance')
+-------------------------------------------------------------------------------------------------------
+Unknown Attrition Employees = 
+[Total Employees] - [Known Employees]
 
+
+-------------------------------------------------------------------------------------------------------
