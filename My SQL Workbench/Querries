@@ -1,0 +1,1686 @@
+CREATE DATABASE employee_attrition_dw;
+
+USE employee_attrition_dw;
+
+SELECT DATABASE() AS Current_Database; 
+------------------------------------------------------------------------
+
+USE employee_attrition_dw;
+
+CREATE TABLE stg_employee_attrition (
+    Employee_ID INT,
+    Age INT,
+
+    -- Original CSV columns: gender and Gender
+    -- Renamed because MySQL treats names as case-insensitive
+    Gender_Detail VARCHAR(30),
+    Gender_Group VARCHAR(20),
+
+    Department VARCHAR(50),
+    Job_Role VARCHAR(50),
+    Education_Level VARCHAR(50),
+    Marital_Status VARCHAR(30),
+
+    Job_Tenure INT,
+    Tenure_Group VARCHAR(20),
+
+    Distance_From_Home INT,
+    Distance_Group VARCHAR(20),
+
+    Performance_Rating INT,
+    Performance_Category VARCHAR(20),
+
+    Last_Promotion_Year INT,
+    Years_Since_Last_Promotion INT,
+
+    Training_Hours INT,
+    Training_Level VARCHAR(20),
+
+    Work_Life_Balance INT,
+    Job_Satisfaction INT,
+
+    Overall_Satisfaction_Score DECIMAL(4,2),
+
+    -- Kept as text in staging because CSV contains blanks
+    attrition VARCHAR(10),
+    Attrition_Status VARCHAR(20),
+
+    Attrition_Available TINYINT,
+
+    -- Kept as text in staging because 879 records are blank
+    Exit_Interview_Score VARCHAR(10)
+);
+
+SHOW COLUMNS FROM stg_employee_attrition;
+------------------------------------------------------------------------
+SELECT
+    SUM(Employee_ID IS NULL) AS Missing_Employee_ID,
+    SUM(Age IS NULL) AS Missing_Age,
+    SUM(Department IS NULL) AS Missing_Department,
+    SUM(Job_Role IS NULL) AS Missing_Job_Role,
+    SUM(Job_Tenure IS NULL) AS Missing_Job_Tenure,
+    SUM(Performance_Rating IS NULL) AS Missing_Performance_Rating,
+    SUM(Training_Hours IS NULL) AS Missing_Training_Hours,
+    SUM(Work_Life_Balance IS NULL) AS Missing_Work_Life_Balance,
+    SUM(Job_Satisfaction IS NULL) AS Missing_Job_Satisfaction,
+    SUM(attrition IS NULL OR attrition = '') AS Missing_Attrition,
+    SUM(Exit_Interview_Score IS NULL OR Exit_Interview_Score = '') AS Missing_Exit_Interview_Score
+FROM stg_employee_attrition;
+------------------------------------------------------------------------
+SELECT
+    Attrition_Status,
+    COUNT(*) AS Employee_Count
+FROM stg_employee_attrition
+GROUP BY Attrition_Status
+ORDER BY Attrition_Status;
+------------------------------------------------------------------------
+-- ============================================================
+-- CREATE DIMENSION TABLES
+-- ============================================================
+
+-- 1. Employee Dimension
+CREATE TABLE dim_employee (
+    Employee_Key INT AUTO_INCREMENT PRIMARY KEY,
+    Employee_ID INT NOT NULL UNIQUE,
+    Age INT,
+    Gender_Detail VARCHAR(30),
+    Gender_Group VARCHAR(20),
+    Education_Level VARCHAR(50),
+    Marital_Status VARCHAR(30),
+    Job_Tenure INT,
+    Tenure_Group VARCHAR(20),
+    Distance_From_Home INT,
+    Distance_Group VARCHAR(20)
+);
+
+-- 2. Department Dimension
+CREATE TABLE dim_department (
+    Department_Key INT AUTO_INCREMENT PRIMARY KEY,
+    Department VARCHAR(50) NOT NULL UNIQUE
+);
+
+-- 3. Job Role Dimension
+CREATE TABLE dim_job_role (
+    Job_Role_Key INT AUTO_INCREMENT PRIMARY KEY,
+    Job_Role VARCHAR(50) NOT NULL UNIQUE
+);
+------------------------------------------------------------------------
+-- ============================================================
+-- POPULATE DIMENSION TABLES
+-- ============================================================
+
+-- 1. Populate Employee Dimension
+INSERT INTO dim_employee (
+    Employee_ID,
+    Age,
+    Gender_Detail,
+    Gender_Group,
+    Education_Level,
+    Marital_Status,
+    Job_Tenure,
+    Tenure_Group,
+    Distance_From_Home,
+    Distance_Group
+)
+SELECT
+    Employee_ID,
+    Age,
+    Gender_Detail,
+    Gender_Group,
+    Education_Level,
+    Marital_Status,
+    Job_Tenure,
+    Tenure_Group,
+    Distance_From_Home,
+    Distance_Group
+FROM stg_employee_attrition;
+
+
+-- 2. Populate Department Dimension
+INSERT INTO dim_department (Department)
+SELECT DISTINCT
+    Department
+FROM stg_employee_attrition
+WHERE Department IS NOT NULL
+ORDER BY Department;
+
+
+-- 3. Populate Job Role Dimension
+INSERT INTO dim_job_role (Job_Role)
+SELECT DISTINCT
+    Job_Role
+FROM stg_employee_attrition
+WHERE Job_Role IS NOT NULL
+ORDER BY Job_Role;
+------------------------------------------------------------------------
+-- ============================================================
+-- STEP 10: CREATE FACT TABLE
+-- ============================================================
+
+CREATE TABLE fact_employee_performance (
+    Fact_Key INT AUTO_INCREMENT PRIMARY KEY,
+
+    Employee_Key INT NOT NULL,
+    Department_Key INT NOT NULL,
+    Job_Role_Key INT NOT NULL,
+
+    Performance_Rating INT,
+    Performance_Category VARCHAR(20),
+
+    Last_Promotion_Year INT,
+    Years_Since_Last_Promotion INT,
+
+    Training_Hours INT,
+    Training_Level VARCHAR(20),
+
+    Work_Life_Balance INT,
+    Job_Satisfaction INT,
+    Overall_Satisfaction_Score DECIMAL(4,2),
+
+    Attrition BOOLEAN NULL,
+    Attrition_Status VARCHAR(20),
+    Attrition_Available TINYINT,
+
+    Exit_Interview_Score INT NULL,
+
+    CONSTRAINT fk_fact_employee
+        FOREIGN KEY (Employee_Key)
+        REFERENCES dim_employee(Employee_Key),
+
+    CONSTRAINT fk_fact_department
+        FOREIGN KEY (Department_Key)
+        REFERENCES dim_department(Department_Key),
+
+    CONSTRAINT fk_fact_job_role
+        FOREIGN KEY (Job_Role_Key)
+        REFERENCES dim_job_role(Job_Role_Key)
+);
+------------------------------------------------------------------------
+-- ============================================================
+-- STEP 11: POPULATE FACT TABLE
+-- ============================================================
+
+INSERT INTO fact_employee_performance (
+    Employee_Key,
+    Department_Key,
+    Job_Role_Key,
+    Performance_Rating,
+    Performance_Category,
+    Last_Promotion_Year,
+    Years_Since_Last_Promotion,
+    Training_Hours,
+    Training_Level,
+    Work_Life_Balance,
+    Job_Satisfaction,
+    Overall_Satisfaction_Score,
+    Attrition,
+    Attrition_Status,
+    Attrition_Available,
+    Exit_Interview_Score
+)
+SELECT
+    e.Employee_Key,
+    d.Department_Key,
+    r.Job_Role_Key,
+
+    s.Performance_Rating,
+    s.Performance_Category,
+
+    s.Last_Promotion_Year,
+    s.Years_Since_Last_Promotion,
+
+    s.Training_Hours,
+    s.Training_Level,
+
+    s.Work_Life_Balance,
+    s.Job_Satisfaction,
+    s.Overall_Satisfaction_Score,
+
+    CASE
+        WHEN s.attrition = 'True' THEN 1
+        WHEN s.attrition = 'False' THEN 0
+        ELSE NULL
+    END AS Attrition,
+
+    s.Attrition_Status,
+    s.Attrition_Available,
+
+    CASE
+        WHEN TRIM(s.Exit_Interview_Score) = '' THEN NULL
+        ELSE CAST(s.Exit_Interview_Score AS UNSIGNED)
+    END AS Exit_Interview_Score
+
+FROM stg_employee_attrition s
+
+INNER JOIN dim_employee e
+    ON s.Employee_ID = e.Employee_ID
+
+INNER JOIN dim_department d
+    ON s.Department = d.Department
+
+INNER JOIN dim_job_role r
+    ON s.Job_Role = r.Job_Role;
+------------------------------------------------------------------------
+
+INSERT INTO fact_employee_performance (
+    Employee_Key,
+    Department_Key,
+    Job_Role_Key,
+    Performance_Rating,
+    Performance_Category,
+    Last_Promotion_Year,
+    Years_Since_Last_Promotion,
+    Training_Hours,
+    Training_Level,
+    Work_Life_Balance,
+    Job_Satisfaction,
+    Overall_Satisfaction_Score,
+    Attrition,
+    Attrition_Status,
+    Attrition_Available,
+    Exit_Interview_Score
+)
+SELECT
+    e.Employee_Key,
+    d.Department_Key,
+    r.Job_Role_Key,
+
+    s.Performance_Rating,
+    s.Performance_Category,
+
+    s.Last_Promotion_Year,
+    s.Years_Since_Last_Promotion,
+
+    s.Training_Hours,
+    s.Training_Level,
+
+    s.Work_Life_Balance,
+    s.Job_Satisfaction,
+    s.Overall_Satisfaction_Score,
+
+    CASE
+        WHEN LOWER(TRIM(s.attrition)) = 'true' THEN 1
+        WHEN LOWER(TRIM(s.attrition)) = 'false' THEN 0
+        ELSE NULL
+    END AS Attrition,
+
+    s.Attrition_Status,
+    s.Attrition_Available,
+
+    CASE
+        WHEN TRIM(s.Exit_Interview_Score) = ''
+             OR s.Exit_Interview_Score IS NULL
+        THEN NULL
+        ELSE CAST(CAST(s.Exit_Interview_Score AS DECIMAL(10,2)) AS UNSIGNED)
+    END AS Exit_Interview_Score
+
+FROM stg_employee_attrition s
+
+INNER JOIN dim_employee e
+    ON s.Employee_ID = e.Employee_ID
+
+INNER JOIN dim_department d
+    ON s.Department = d.Department
+
+INNER JOIN dim_job_role r
+    ON s.Job_Role = r.Job_Role;
+------------------------------------------------------------------------
+
+SELECT
+    COUNT(*) AS Total_Fact_Rows,
+    COUNT(e.Employee_Key) AS Matched_Employees,
+    COUNT(d.Department_Key) AS Matched_Departments,
+    COUNT(r.Job_Role_Key) AS Matched_Job_Roles
+FROM fact_employee_performance f
+LEFT JOIN dim_employee e
+    ON f.Employee_Key = e.Employee_Key
+LEFT JOIN dim_department d
+    ON f.Department_Key = d.Department_Key
+LEFT JOIN dim_job_role r
+    ON f.Job_Role_Key = r.Job_Role_Key;
+------------------------------------------------------------------------
+SELECT
+    Attrition_Status,
+    COUNT(*) AS Employee_Count,
+    SUM(CASE WHEN Attrition = 1 THEN 1 ELSE 0 END) AS Attrited_Count,
+    SUM(CASE WHEN Attrition = 0 THEN 1 ELSE 0 END) AS Not_Attrited_Count
+FROM fact_employee_performance
+GROUP BY Attrition_Status
+ORDER BY Attrition_Status;
+------------------------------------------------------------------------
+SELECT
+    Exit_Interview_Score,
+    COUNT(*) AS Employee_Count
+FROM fact_employee_performance
+GROUP BY Exit_Interview_Score
+ORDER BY Exit_Interview_Score;
+------------------------------------------------------------------------
+SELECT
+    MIN(Performance_Rating) AS Min_Performance_Rating,
+    MAX(Performance_Rating) AS Max_Performance_Rating,
+
+    MIN(Work_Life_Balance) AS Min_Work_Life_Balance,
+    MAX(Work_Life_Balance) AS Max_Work_Life_Balance,
+
+    MIN(Job_Satisfaction) AS Min_Job_Satisfaction,
+    MAX(Job_Satisfaction) AS Max_Job_Satisfaction,
+
+    MIN(Training_Hours) AS Min_Training_Hours,
+    MAX(Training_Hours) AS Max_Training_Hours,
+
+    MIN(Last_Promotion_Year) AS Min_Promotion_Year,
+    MAX(Last_Promotion_Year) AS Max_Promotion_Year
+
+FROM fact_employee_performance;
+------------------------------------------------------------------------
+SELECT 'dim_employee' AS Table_Name, COUNT(*) AS Row_Count
+FROM dim_employee
+
+UNION ALL
+
+SELECT 'dim_department', COUNT(*)
+FROM dim_department
+
+UNION ALL
+
+SELECT 'dim_job_role', COUNT(*)
+FROM dim_job_role
+
+UNION ALL
+
+SELECT 'fact_employee_performance', COUNT(*)
+FROM fact_employee_performance;
+------------------------------------------------------------------------
+SELECT
+    MIN(Performance_Rating) AS Min_Performance_Rating,
+    MAX(Performance_Rating) AS Max_Performance_Rating,
+
+    MIN(Work_Life_Balance) AS Min_Work_Life_Balance,
+    MAX(Work_Life_Balance) AS Max_Work_Life_Balance,
+
+    MIN(Job_Satisfaction) AS Min_Job_Satisfaction,
+    MAX(Job_Satisfaction) AS Max_Job_Satisfaction,
+
+    MIN(Training_Hours) AS Min_Training_Hours,
+    MAX(Training_Hours) AS Max_Training_Hours,
+
+    MIN(Last_Promotion_Year) AS Min_Promotion_Year,
+    MAX(Last_Promotion_Year) AS Max_Promotion_Year
+
+FROM fact_employee_performance;
+------------------------------------------------------------------------
+-- ============================================================
+-- 01. OVERALL WORKFORCE KPIs
+-- ============================================================
+
+SELECT
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Retention_Rate_Percent,
+
+    ROUND(AVG(e.Job_Tenure), 2) AS Average_Tenure,
+
+    ROUND(AVG(f.Performance_Rating), 2) AS Average_Performance_Rating,
+
+    ROUND(AVG(f.Overall_Satisfaction_Score), 2) AS Average_Satisfaction,
+
+    ROUND(AVG(f.Training_Hours), 2) AS Average_Training_Hours
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_employee e
+    ON f.Employee_Key = e.Employee_Key;
+------------------------------------------------------------------------
+-- ============================================================
+-- 02. DEPARTMENT-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    d.Department,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_department d
+    ON f.Department_Key = d.Department_Key
+
+GROUP BY d.Department
+
+ORDER BY Attrition_Rate_Percent DESC;
+------------------------------------------------------------------------
+-- ============================================================
+-- 03. JOB ROLE-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    r.Job_Role,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_job_role r
+    ON f.Job_Role_Key = r.Job_Role_Key
+
+GROUP BY r.Job_Role
+
+ORDER BY Attrition_Rate_Percent DESC;
+------------------------------------------------------------------------
+-- ============================================================
+-- 04. PERFORMANCE RATING-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    f.Performance_Rating,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+GROUP BY f.Performance_Rating
+
+ORDER BY f.Performance_Rating;
+------------------------------------------------------------------------
+-- ============================================================
+-- 05. WORK-LIFE BALANCE-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    f.Work_Life_Balance,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+GROUP BY f.Work_Life_Balance
+
+ORDER BY f.Work_Life_Balance;
+------------------------------------------------------------------------
+-- ============================================================
+-- 06. JOB SATISFACTION-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    f.Job_Satisfaction,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+GROUP BY f.Job_Satisfaction
+
+ORDER BY f.Job_Satisfaction;
+------------------------------------------------------------------------
+-- ============================================================
+-- 07. JOB TENURE-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    e.Tenure_Group,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_employee e
+    ON f.Employee_Key = e.Employee_Key
+
+GROUP BY e.Tenure_Group
+
+ORDER BY
+    CASE e.Tenure_Group
+        WHEN '0-5 Years' THEN 1
+        WHEN '6-10 Years' THEN 2
+        WHEN '11-15 Years' THEN 3
+        WHEN '16-20 Years' THEN 4
+    END;
+------------------------------------------------------------------------
+-- ============================================================
+-- 08. AGE GROUP-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    CASE
+        WHEN e.Age < 30 THEN 'Under 30'
+        WHEN e.Age BETWEEN 30 AND 40 THEN '30-40'
+        WHEN e.Age BETWEEN 41 AND 50 THEN '41-50'
+        WHEN e.Age BETWEEN 51 AND 60 THEN '51-60'
+    END AS Age_Group,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_employee e
+    ON f.Employee_Key = e.Employee_Key
+
+GROUP BY
+    CASE
+        WHEN e.Age < 30 THEN 'Under 30'
+        WHEN e.Age BETWEEN 30 AND 40 THEN '30-40'
+        WHEN e.Age BETWEEN 41 AND 50 THEN '41-50'
+        WHEN e.Age BETWEEN 51 AND 60 THEN '51-60'
+    END
+
+ORDER BY
+    CASE
+        WHEN Age_Group = 'Under 30' THEN 1
+        WHEN Age_Group = '30-40' THEN 2
+        WHEN Age_Group = '41-50' THEN 3
+        WHEN Age_Group = '51-60' THEN 4
+    END;
+------------------------------------------------------------------------
+-- ============================================================
+-- 09. EDUCATION LEVEL-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    e.Education_Level,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_employee e
+    ON f.Employee_Key = e.Employee_Key
+
+GROUP BY e.Education_Level
+
+ORDER BY Attrition_Rate_Percent DESC;
+------------------------------------------------------------------------
+-- ============================================================
+-- 10. MARITAL STATUS-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    e.Marital_Status,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_employee e
+    ON f.Employee_Key = e.Employee_Key
+
+GROUP BY e.Marital_Status
+
+ORDER BY Attrition_Rate_Percent DESC;
+------------------------------------------------------------------------
+-- ============================================================
+-- 11. TRAINING LEVEL-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    f.Training_Level,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent,
+
+    ROUND(AVG(f.Training_Hours), 2) AS Average_Training_Hours
+
+FROM fact_employee_performance f
+
+GROUP BY f.Training_Level
+
+ORDER BY
+    CASE f.Training_Level
+        WHEN 'Low' THEN 1
+        WHEN 'Medium' THEN 2
+        WHEN 'High' THEN 3
+        WHEN 'Very High' THEN 4
+    END;
+------------------------------------------------------------------------
+-- ============================================================
+-- 12. DISTANCE FROM HOME-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    e.Distance_Group,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_employee e
+    ON f.Employee_Key = e.Employee_Key
+
+GROUP BY e.Distance_Group
+
+ORDER BY
+    CASE e.Distance_Group
+        WHEN '1-10' THEN 1
+        WHEN '11-20' THEN 2
+        WHEN '21-30' THEN 3
+        WHEN '31-40' THEN 4
+        WHEN '41-50' THEN 5
+    END;
+------------------------------------------------------------------------
+-- ============================================================
+-- 13. YEARS SINCE LAST PROMOTION-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    f.Years_Since_Last_Promotion,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+GROUP BY f.Years_Since_Last_Promotion
+
+ORDER BY f.Years_Since_Last_Promotion;
+------------------------------------------------------------------------
+-- ============================================================
+-- 14. OVERALL SATISFACTION-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    CASE
+        WHEN f.Overall_Satisfaction_Score < 2.0 THEN 'Low'
+        WHEN f.Overall_Satisfaction_Score < 3.0 THEN 'Moderate'
+        WHEN f.Overall_Satisfaction_Score < 4.0 THEN 'High'
+        ELSE 'Very High'
+    END AS Satisfaction_Group,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent,
+
+    ROUND(AVG(f.Overall_Satisfaction_Score), 2)
+        AS Average_Satisfaction_Score
+
+FROM fact_employee_performance f
+
+GROUP BY
+    CASE
+        WHEN f.Overall_Satisfaction_Score < 2.0 THEN 'Low'
+        WHEN f.Overall_Satisfaction_Score < 3.0 THEN 'Moderate'
+        WHEN f.Overall_Satisfaction_Score < 4.0 THEN 'High'
+        ELSE 'Very High'
+    END
+
+ORDER BY
+    CASE
+        WHEN Satisfaction_Group = 'Low' THEN 1
+        WHEN Satisfaction_Group = 'Moderate' THEN 2
+        WHEN Satisfaction_Group = 'High' THEN 3
+        WHEN Satisfaction_Group = 'Very High' THEN 4
+    END;
+------------------------------------------------------------------------
+-- ============================================================
+-- 15. GENDER-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    e.Gender_Group,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_employee e
+    ON f.Employee_Key = e.Employee_Key
+
+GROUP BY e.Gender_Group
+
+ORDER BY e.Gender_Group;
+------------------------------------------------------------------------
+-- ============================================================
+-- 16. EXIT INTERVIEW SCORE-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    f.Exit_Interview_Score,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent,
+
+    ROUND(AVG(f.Exit_Interview_Score), 2)
+        AS Average_Exit_Interview_Score
+
+FROM fact_employee_performance f
+
+WHERE f.Exit_Interview_Score IS NOT NULL
+
+GROUP BY f.Exit_Interview_Score
+
+ORDER BY f.Exit_Interview_Score;
+------------------------------------------------------------------------
+-- ============================================================
+-- 17. PERFORMANCE CATEGORY-WISE ATTRITION ANALYSIS
+-- ============================================================
+
+SELECT
+    f.Performance_Category,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Not Attrited' THEN 1
+        ELSE 0
+    END) AS Not_Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Unknown' THEN 1
+        ELSE 0
+    END) AS Unknown_Attrition_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+GROUP BY f.Performance_Category
+
+ORDER BY
+    CASE f.Performance_Category
+        WHEN 'Low' THEN 1
+        WHEN 'Average' THEN 2
+        WHEN 'Good' THEN 3
+        WHEN 'Excellent' THEN 4
+    END;
+------------------------------------------------------------------------
+-- ============================================================
+-- 18. PERFORMANCE RATING vs TRAINING HOURS
+-- ============================================================
+
+SELECT
+    f.Performance_Rating,
+
+    COUNT(*) AS Total_Employees,
+
+    ROUND(AVG(f.Training_Hours), 2) AS Average_Training_Hours,
+
+    MIN(f.Training_Hours) AS Minimum_Training_Hours,
+
+    MAX(f.Training_Hours) AS Maximum_Training_Hours,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate_Percent
+
+FROM fact_employee_performance f
+
+GROUP BY f.Performance_Rating
+
+ORDER BY f.Performance_Rating;
+------------------------------------------------------------------------
+-- ============================================================
+-- 19. DEPARTMENT-WISE PERFORMANCE RATING ANALYSIS
+-- ============================================================
+
+SELECT
+    d.Department,
+    f.Performance_Rating,
+
+    COUNT(*) AS Total_Employees,
+
+    ROUND(AVG(f.Training_Hours), 2) AS Average_Training_Hours,
+
+    ROUND(AVG(f.Job_Satisfaction), 2) AS Average_Job_Satisfaction,
+
+    ROUND(AVG(f.Work_Life_Balance), 2) AS Average_Work_Life_Balance,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_department d
+    ON f.Department_Key = d.Department_Key
+
+GROUP BY
+    d.Department,
+    f.Performance_Rating
+
+ORDER BY
+    d.Department,
+    f.Performance_Rating;
+------------------------------------------------------------------------ 
+-- ============================================================
+-- 20. DEPARTMENT-WISE JOB SATISFACTION ANALYSIS
+-- ============================================================
+
+SELECT
+    d.Department,
+    f.Job_Satisfaction,
+
+    COUNT(*) AS Total_Employees,
+
+    ROUND(AVG(f.Performance_Rating), 2)
+        AS Average_Performance_Rating,
+
+    ROUND(AVG(f.Training_Hours), 2)
+        AS Average_Training_Hours,
+
+    ROUND(AVG(f.Work_Life_Balance), 2)
+        AS Average_Work_Life_Balance,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_department d
+    ON f.Department_Key = d.Department_Key
+
+GROUP BY
+    d.Department,
+    f.Job_Satisfaction
+
+ORDER BY
+    d.Department,
+    f.Job_Satisfaction;
+------------------------------------------------------------------------
+-- ============================================================
+-- 21. DEPARTMENT-WISE WORK-LIFE BALANCE ANALYSIS
+-- ============================================================
+
+SELECT
+    d.Department,
+    f.Work_Life_Balance,
+
+    COUNT(*) AS Total_Employees,
+
+    ROUND(AVG(f.Performance_Rating), 2)
+        AS Average_Performance_Rating,
+
+    ROUND(AVG(f.Training_Hours), 2)
+        AS Average_Training_Hours,
+
+    ROUND(AVG(f.Job_Satisfaction), 2)
+        AS Average_Job_Satisfaction,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_department d
+    ON f.Department_Key = d.Department_Key
+
+GROUP BY
+    d.Department,
+    f.Work_Life_Balance
+
+ORDER BY
+    d.Department,
+    f.Work_Life_Balance;
+------------------------------------------------------------------------
+-- ============================================================
+-- 22. DEPARTMENT-WISE TRAINING LEVEL ANALYSIS
+-- ============================================================
+
+SELECT
+    d.Department,
+    f.Training_Level,
+
+    COUNT(*) AS Total_Employees,
+
+    ROUND(AVG(f.Performance_Rating), 2)
+        AS Average_Performance_Rating,
+
+    ROUND(AVG(f.Training_Hours), 2)
+        AS Average_Training_Hours,
+
+    ROUND(AVG(f.Job_Satisfaction), 2)
+        AS Average_Job_Satisfaction,
+
+    ROUND(AVG(f.Work_Life_Balance), 2)
+        AS Average_Work_Life_Balance,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_department d
+    ON f.Department_Key = d.Department_Key
+
+GROUP BY
+    d.Department,
+    f.Training_Level
+
+ORDER BY
+    d.Department,
+    f.Training_Level;
+------------------------------------------------------------------------
+-- ============================================================
+-- 23. DEPARTMENT-WISE AGE GROUP ANALYSIS
+-- ============================================================
+
+SELECT
+    d.Department,
+
+    CASE
+        WHEN e.Age < 30 THEN 'Under 30'
+        WHEN e.Age BETWEEN 30 AND 40 THEN '30-40'
+        WHEN e.Age BETWEEN 41 AND 50 THEN '41-50'
+        WHEN e.Age BETWEEN 51 AND 60 THEN '51-60'
+    END AS Age_Group,
+
+    COUNT(*) AS Total_Employees,
+
+    ROUND(AVG(f.Performance_Rating), 2)
+        AS Average_Performance_Rating,
+
+    ROUND(AVG(f.Training_Hours), 2)
+        AS Average_Training_Hours,
+
+    ROUND(AVG(f.Job_Satisfaction), 2)
+        AS Average_Job_Satisfaction,
+
+    ROUND(AVG(f.Work_Life_Balance), 2)
+        AS Average_Work_Life_Balance,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_employee e
+    ON f.Employee_Key = e.Employee_Key
+
+INNER JOIN dim_department d
+    ON f.Department_Key = d.Department_Key
+
+GROUP BY
+    d.Department,
+    Age_Group
+
+ORDER BY
+    d.Department,
+    Age_Group;
+------------------------------------------------------------------------
+-- ============================================================
+-- 24. DEPARTMENT-WISE TENURE GROUP ANALYSIS
+-- ============================================================
+
+SELECT
+    d.Department,
+
+    e.Tenure_Group,
+
+    COUNT(*) AS Total_Employees,
+
+    ROUND(AVG(f.Performance_Rating), 2)
+        AS Average_Performance_Rating,
+
+    ROUND(AVG(f.Training_Hours), 2)
+        AS Average_Training_Hours,
+
+    ROUND(AVG(f.Job_Satisfaction), 2)
+        AS Average_Job_Satisfaction,
+
+    ROUND(AVG(f.Work_Life_Balance), 2)
+        AS Average_Work_Life_Balance,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_employee e
+    ON f.Employee_Key = e.Employee_Key
+
+INNER JOIN dim_department d
+    ON f.Department_Key = d.Department_Key
+
+GROUP BY
+    d.Department,
+    e.Tenure_Group
+
+ORDER BY
+    d.Department,
+    e.Tenure_Group;
+------------------------------------------------------------------------
+-- ============================================================
+-- 25. DEPARTMENT-WISE OVERALL KPI SUMMARY
+-- ============================================================
+
+SELECT
+    d.Department,
+
+    COUNT(*) AS Total_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status = 'Attrited' THEN 1
+        ELSE 0
+    END) AS Attrited_Employees,
+
+    SUM(CASE
+        WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+        THEN 1
+        ELSE 0
+    END) AS Known_Attrition_Records,
+
+    ROUND(
+        100.0 *
+        SUM(CASE
+            WHEN f.Attrition_Status = 'Attrited' THEN 1
+            ELSE 0
+        END)
+        /
+        NULLIF(
+            SUM(CASE
+                WHEN f.Attrition_Status IN ('Attrited', 'Not Attrited')
+                THEN 1
+                ELSE 0
+            END),
+            0
+        ),
+        2
+    ) AS Attrition_Rate,
+
+    ROUND(AVG(f.Performance_Rating), 2)
+        AS Average_Performance_Rating,
+
+    ROUND(AVG(f.Overall_Satisfaction_Score), 2)
+        AS Average_Satisfaction,
+
+    ROUND(AVG(f.Training_Hours), 2)
+        AS Average_Training_Hours,
+
+    ROUND(AVG(e.Job_Tenure), 2)
+        AS Average_Tenure
+
+FROM fact_employee_performance f
+
+INNER JOIN dim_employee e
+    ON f.Employee_Key = e.Employee_Key
+
+INNER JOIN dim_department d
+    ON f.Department_Key = d.Department_Key
+
+GROUP BY
+    d.Department
+
+ORDER BY
+    d.Department;
